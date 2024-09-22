@@ -1,4 +1,3 @@
-// game.js
 import { Scene } from "phaser";
 
 export class Game extends Scene {
@@ -18,33 +17,39 @@ export class Game extends Scene {
   }
 
   preload() {
+    // Load assets
     this.load.setPath("assets");
     this.load.image("background", "Map3k.jpg");
-    this.load.image("stag1", "Stag1.png");
-    this.load.image("stag2", "Stag2.png");
-    this.load.image("stag3", "Stag3.png");
-    this.load.image("stag4", "Stag4.png");
-    this.load.image("stag5", "Stag5.png");
-    // Load found stag images if different
-    this.load.image("stag1_found", "Stag1.png");
-    this.load.image("stag2_found", "Stag1.png");
-    this.load.image("stag3_found", "Stag1.png");
-    this.load.image("stag4_found", "Stag1.png");
-    this.load.image("stag5_found", "Stag1.png");
+    for (let i = 1; i <= 5; i++) {
+      this.load.image(`stag${i}`, `Stag${i}.png`);
+      // this.load.image(`stag${i}_found`, `Stag${i}_found.png`);
+      this.load.image(`stag1`, `Stag1.png`);
+    }
   }
 
   create() {
     console.log("Game scene created");
-    // Add background image (map)
+    this.setupMap();
+    this.setupCamera();
+    this.setupInput();
+    this.addStages();
+    this.setupTimer();
+
+    this.events.on('pause', this.onPause, this);
+    this.events.on('resume', this.onResume, this);
+  }
+
+  setupMap() {
     this.map = this.add.image(0, 0, "background").setOrigin(0, 0);
+  }
 
-    // Set camera bounds to the full map size
+  setupCamera() {
     this.cameras.main.setBounds(0, 0, this.map.width, this.map.height);
-
-    // Center the camera on the map
     this.cameras.main.centerOn(this.map.width / 2, this.map.height / 2);
     this.cameras.main.zoom = this.initialZoom;
+  }
 
+  setupInput() {
     // Enable camera panning
     this.input.on('pointerdown', this.startDrag, this);
     this.input.on('pointerup', this.stopDrag, this);
@@ -53,26 +58,11 @@ export class Game extends Scene {
     // Enable camera zooming with mouse wheel
     this.input.on('wheel', this.handleZoom, this);
 
-    // Handle pinch-to-zoom
-    this.input.addPointer(2); // Add support for 2 pointers (for multi-touch)
+    // Add support for multi-touch pinch-to-zoom
+    this.input.addPointer(2);
     this.input.on('pointerdown', this.onPointerDown, this);
     this.input.on('pointerup', this.onPointerUp, this);
     this.input.on('pointermove', this.onPointerMove, this);
-
-    // Add stages
-    this.addStages();
-
-    // Timer and score are now in the HTML navbar, no need for canvas text
-    this.timer = this.time.addEvent({
-      delay: 1000,
-      callback: this.updateTimer,
-      callbackScope: this,
-      loop: true,
-    });
-
-    // Listen for pause and resume events
-    this.events.on('pause', this.onPause, this);
-    this.events.on('resume', this.onResume, this);
   }
 
   addStages() {
@@ -95,27 +85,34 @@ export class Game extends Scene {
   }
 
   onStageClick(stage, index) {
-    if (this.gameOver) return;
-    if (stage.texture.key.includes('found')) return; // Prevent multiple clicks on the same stag
+    if (this.gameOver || stage.texture.key.includes('found')) return;
 
     this.score += 1;
-    const stagIcon = document.getElementById(`stag-icon-${index + 1}`);
-    if (stagIcon) {
-      stagIcon.classList.add('found'); // Apply glowing effect via CSS
-      stagIcon.classList.add('score-animate'); // Trigger score animation
-
-      // Remove the animation class after animation completes
-      stagIcon.addEventListener('animationend', () => {
-        stagIcon.classList.remove('score-animate');
-      });
-    }
-
-    // Change the stag image to indicate it has been found
-    stage.setTexture(`stag${index + 1}_found`); // Ensure you have these textures loaded
+    this.updateUIOnStageFound(index);
+    stage.setTexture(`stag${index + 1}_found`);
 
     if (this.score === this.stages.length) {
       this.endGame(true);
     }
+  }
+
+  updateUIOnStageFound(index) {
+    const stagIcon = document.getElementById(`stag-icon-${index + 1}`);
+    if (stagIcon) {
+      stagIcon.classList.add('found', 'score-animate');
+      stagIcon.addEventListener('animationend', () => {
+        stagIcon.classList.remove('score-animate');
+      });
+    }
+  }
+
+  setupTimer() {
+    this.timer = this.time.addEvent({
+      delay: 1000,
+      callback: this.updateTimer,
+      callbackScope: this,
+      loop: true,
+    });
   }
 
   updateTimer() {
@@ -133,10 +130,8 @@ export class Game extends Scene {
 
   endGame(userWon) {
     this.gameOver = true;
-    // Stop the timer
     this.timer.remove();
 
-    // Display the game over modal
     const modal = document.getElementById('game-over-modal');
     const message = document.getElementById('game-over-message');
     const details = document.getElementById('game-over-details');
@@ -150,8 +145,6 @@ export class Game extends Scene {
     }
 
     modal.style.display = 'flex'; // Show the modal
-
-    // Pause the game scene
     this.pauseGame();
   }
 
@@ -188,12 +181,13 @@ export class Game extends Scene {
     this.lastPointerPosition = { x: pointer.x, y: pointer.y };
   }
 
-  stopDrag(pointer) {
+  stopDrag() {
     this.isDragging = false;
   }
 
   onDrag(pointer) {
     if (!this.isDragging || this.isPaused) return;
+
     const dx = pointer.x - this.lastPointerPosition.x;
     const dy = pointer.y - this.lastPointerPosition.y;
 
@@ -203,23 +197,19 @@ export class Game extends Scene {
     this.lastPointerPosition = { x: pointer.x, y: pointer.y };
   }
 
-  // Zooming Method for Mouse Wheel
-  handleZoom(pointer, gameObjects, deltaX, deltaY, deltaZ) {
+  // Zoom Methods
+  handleZoom(pointer, gameObjects, deltaX, deltaY) {
     if (this.isPaused) return;
 
     const zoomStep = 0.1;
-    if (deltaY > 0) {
-      this.cameras.main.zoom = Phaser.Math.Clamp(this.cameras.main.zoom - zoomStep, 0.5, 2);
-    } else {
-      this.cameras.main.zoom = Phaser.Math.Clamp(this.cameras.main.zoom + zoomStep, 0.5, 2);
-    }
+    const zoomFactor = deltaY > 0 ? -zoomStep : zoomStep;
+    this.cameras.main.zoom = Phaser.Math.Clamp(this.cameras.main.zoom + zoomFactor, 0.5, 2);
   }
 
-  // Pinch-to-Zoom Methods for Mobile
+  // Multi-touch pinch-to-zoom methods
   onPointerDown(pointer) {
     this.pointers.push(pointer);
     if (this.pointers.length === 2) {
-      // Calculate initial distance between two pointers
       const distance = Phaser.Math.Distance.Between(
         this.pointers[0].x, this.pointers[0].y,
         this.pointers[1].x, this.pointers[1].y
@@ -238,20 +228,12 @@ export class Game extends Scene {
       const p1 = this.pointers[0];
       const p2 = this.pointers[1];
 
-      // Get the distance between the two pointers
       const currentDistance = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
-      console.log(`Current Distance: ${currentDistance}`);  // Debugging line
-
-      // Calculate the scale factor based on the initial pinch distance
       const scaleFactor = currentDistance / this.initialPinchDistance;
       let newZoom = this.initialZoom * scaleFactor;
 
-      // Clamp the new zoom to a reasonable range
       newZoom = Phaser.Math.Clamp(newZoom, 0.5, 2);
-
-      // Apply the new zoom to the camera
       this.cameras.main.zoom = newZoom;
-      console.log(`New Zoom: ${newZoom}`);  // Debugging line
     }
   }
 }
