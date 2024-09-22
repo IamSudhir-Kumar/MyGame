@@ -1,3 +1,4 @@
+// game.js
 import { Scene } from "phaser";
 
 export class Game extends Scene {
@@ -6,20 +7,14 @@ export class Game extends Scene {
     this.map = null;
     this.stages = [];
     this.score = 0;
-    this.scoreText = null;
     this.timer = null;
-    this.timerText = null;
     this.gameOver = false;
-    this.pinch = {
-      active: false,
-      initialDistance: 0,
-      initialZoom: 0,
-    };
-    this.drag = {
-      active: false,
-      startX: 0,
-      startY: 0,
-    };
+    this.isPaused = false;
+    this.isDragging = false;
+    this.lastPointerPosition = { x: 0, y: 0 };
+    this.pointers = [];
+    this.initialPinchDistance = 0;
+    this.initialZoom = 0.5;
   }
 
   preload() {
@@ -30,9 +25,16 @@ export class Game extends Scene {
     this.load.image("stag3", "Stag3.png");
     this.load.image("stag4", "Stag4.png");
     this.load.image("stag5", "Stag5.png");
+    // Load found stag images if different
+    this.load.image("stag1_found", "Stag1.png");
+    this.load.image("stag2_found", "Stag1.png");
+    this.load.image("stag3_found", "Stag1.png");
+    this.load.image("stag4_found", "Stag1.png");
+    this.load.image("stag5_found", "Stag1.png");
   }
 
   create() {
+    console.log("Game scene created");
     // Add background image (map)
     this.map = this.add.image(0, 0, "background").setOrigin(0, 0);
 
@@ -41,43 +43,39 @@ export class Game extends Scene {
 
     // Center the camera on the map
     this.cameras.main.centerOn(this.map.width / 2, this.map.height / 2);
-    this.cameras.main.zoom = 0.5;
+    this.cameras.main.zoom = this.initialZoom;
 
-    // Enable multi-touch
-    this.input.addPointer(1);
+    // Enable camera panning
+    this.input.on('pointerdown', this.startDrag, this);
+    this.input.on('pointerup', this.stopDrag, this);
+    this.input.on('pointermove', this.onDrag, this);
 
-    this.input.on("pointerdown", this.onPointerDown, this);
-    this.input.on("pointermove", this.onPointerMove, this);
-    this.input.on("pointerup", this.onPointerUp, this);
-    this.input.on("wheel", this.onWheel, this);
+    // Enable camera zooming with mouse wheel
+    this.input.on('wheel', this.handleZoom, this);
+
+    // Handle pinch-to-zoom
+    this.input.addPointer(2); // Add support for 2 pointers (for multi-touch)
+    this.input.on('pointerdown', this.onPointerDown, this);
+    this.input.on('pointerup', this.onPointerUp, this);
+    this.input.on('pointermove', this.onPointerMove, this);
 
     // Add stages
     this.addStages();
 
-    // Add score text
-    this.scoreText = this.add.text(10, 10, "Score: 0", {
-      fontSize: "32px",
-      fill: "#fff",
-    });
-    this.scoreText.setScrollFactor(0);
-
-    // Add timer
-    this.timerText = this.add.text(10, 50, "Time: 45", {
-      fontSize: "32px",
-      fill: "#fff",
-    });
-    this.timerText.setScrollFactor(0);
-
+    // Timer and score are now in the HTML navbar, no need for canvas text
     this.timer = this.time.addEvent({
       delay: 1000,
       callback: this.updateTimer,
       callbackScope: this,
       loop: true,
     });
+
+    // Listen for pause and resume events
+    this.events.on('pause', this.onPause, this);
+    this.events.on('resume', this.onResume, this);
   }
 
   addStages() {
-    // Define stage positions (x, y coordinates on the map) and scales
     const stageData = [
       { x: 2742, y: 694, scale: 0.3 },
       { x: 321, y: 671, scale: 0.4 },
@@ -98,32 +96,31 @@ export class Game extends Scene {
 
   onStageClick(stage, index) {
     if (this.gameOver) return;
+    if (stage.texture.key.includes('found')) return; // Prevent multiple clicks on the same stag
 
     this.score += 1;
-    this.scoreText.setText("Score: " + this.score);
-
-    // Make the stage uninteractable and change its appearance
-    stage.disableInteractive();
-    stage.setTint(0x808080); // Gray out the stage
-
-    // Light up the corresponding stag icon
     const stagIcon = document.getElementById(`stag-icon-${index + 1}`);
     if (stagIcon) {
-      stagIcon.style.opacity = 1;
-      stagIcon.style.filter = "none";
-      stagIcon.style.border = "2px solid gold";
+      stagIcon.classList.add('found'); // Apply glowing effect via CSS
+      stagIcon.classList.add('score-animate'); // Trigger score animation
+
+      // Remove the animation class after animation completes
+      stagIcon.addEventListener('animationend', () => {
+        stagIcon.classList.remove('score-animate');
+      });
     }
 
-    // Check if all stages are found
+    // Change the stag image to indicate it has been found
+    stage.setTexture(`stag${index + 1}_found`); // Ensure you have these textures loaded
+
     if (this.score === this.stages.length) {
       this.endGame(true);
     }
   }
 
   updateTimer() {
-    if (this.gameOver) return;
+    if (this.gameOver || this.isPaused) return;
 
-    // Get the current time from the HTML
     let timeElement = document.getElementById("time");
     let timeLeft = parseInt(timeElement.innerText) - 1;
     timeElement.innerText = timeLeft.toString().padStart(2, "0");
@@ -136,124 +133,125 @@ export class Game extends Scene {
 
   endGame(userWon) {
     this.gameOver = true;
+    // Stop the timer
     this.timer.remove();
 
-    // Save score and remaining time to local storage
-    const timeRemaining = document.getElementById("time").innerText;
-    localStorage.setItem("finalScore", this.score);
-    localStorage.setItem("remainingTime", timeRemaining);
+    // Display the game over modal
+    const modal = document.getElementById('game-over-modal');
+    const message = document.getElementById('game-over-message');
+    const details = document.getElementById('game-over-details');
 
-    let message = userWon
-      ? `You found all the stags!`
-      : `Time's up! You couldn't find all stags.`;
+    if (userWon) {
+      message.textContent = "Congratulations!";
+      details.textContent = "You've found all the stags!";
+    } else {
+      message.textContent = "Game Over";
+      details.textContent = "Time's up!";
+    }
 
-    // Display game over message
-    let gameOverText = this.add.text(
-      this.cameras.main.centerX,
-      this.cameras.main.centerY,
-      "GAME OVER",
-      { fontSize: "64px", fill: "#fff" }
-    );
-    gameOverText.setOrigin(0.5);
-    gameOverText.setScrollFactor(0);
+    modal.style.display = 'flex'; // Show the modal
 
-    // Display final message
-    let finalMessageText = this.add.text(
-      this.cameras.main.centerX,
-      this.cameras.main.centerY + 70,
-      message,
-      { fontSize: "32px", fill: "#fff" }
-    );
-    finalMessageText.setOrigin(0.5);
-    finalMessageText.setScrollFactor(0);
-
-    // Display final score
-    let finalScoreText = this.add.text(
-      this.cameras.main.centerX,
-      this.cameras.main.centerY + 120,
-      "Final Score: " + this.score,
-      { fontSize: "32px", fill: "#fff" }
-    );
-    finalScoreText.setOrigin(0.5);
-    finalScoreText.setScrollFactor(0);
+    // Pause the game scene
+    this.pauseGame();
   }
 
-  onPointerDown(pointer) {
-    if (this.gameOver) return;
-
-    if (this.input.pointer1.isDown && this.input.pointer2.isDown) {
-      // Start pinch zoom
-      this.pinch.active = true;
-      this.pinch.initialDistance = Phaser.Math.Distance.Between(
-        this.input.pointer1.x,
-        this.input.pointer1.y,
-        this.input.pointer2.x,
-        this.input.pointer2.y
-      );
-      this.pinch.initialZoom = this.cameras.main.zoom;
-    } else if (!this.pinch.active) {
-      // Start drag
-      this.drag.active = true;
-      this.drag.startX =
-        this.cameras.main.scrollX + pointer.x / this.cameras.main.zoom;
-      this.drag.startY =
-        this.cameras.main.scrollY + pointer.y / this.cameras.main.zoom;
+  pauseGame() {
+    if (!this.isPaused) {
+      this.scene.pause();
+      this.isPaused = true;
+      console.log("Game paused");
     }
+  }
+
+  resumeGame() {
+    if (this.isPaused) {
+      this.scene.resume();
+      this.isPaused = false;
+      console.log("Game resumed");
+    }
+  }
+
+  onPause() {
+    this.isPaused = true;
+    console.log("Pause event received");
+  }
+
+  onResume() {
+    this.isPaused = false;
+    console.log("Resume event received");
+  }
+
+  // Dragging Methods
+  startDrag(pointer) {
+    if (this.isPaused) return;
+    this.isDragging = true;
+    this.lastPointerPosition = { x: pointer.x, y: pointer.y };
+  }
+
+  stopDrag(pointer) {
+    this.isDragging = false;
+  }
+
+  onDrag(pointer) {
+    if (!this.isDragging || this.isPaused) return;
+    const dx = pointer.x - this.lastPointerPosition.x;
+    const dy = pointer.y - this.lastPointerPosition.y;
+
+    this.cameras.main.scrollX -= dx / this.cameras.main.zoom;
+    this.cameras.main.scrollY -= dy / this.cameras.main.zoom;
+
+    this.lastPointerPosition = { x: pointer.x, y: pointer.y };
+  }
+
+  // Zooming Method for Mouse Wheel
+  handleZoom(pointer, gameObjects, deltaX, deltaY, deltaZ) {
+    if (this.isPaused) return;
+
+    const zoomStep = 0.1;
+    if (deltaY > 0) {
+      this.cameras.main.zoom = Phaser.Math.Clamp(this.cameras.main.zoom - zoomStep, 0.5, 2);
+    } else {
+      this.cameras.main.zoom = Phaser.Math.Clamp(this.cameras.main.zoom + zoomStep, 0.5, 2);
+    }
+  }
+
+  // Pinch-to-Zoom Methods for Mobile
+  onPointerDown(pointer) {
+    this.pointers.push(pointer);
+    if (this.pointers.length === 2) {
+      // Calculate initial distance between two pointers
+      const distance = Phaser.Math.Distance.Between(
+        this.pointers[0].x, this.pointers[0].y,
+        this.pointers[1].x, this.pointers[1].y
+      );
+      this.initialPinchDistance = distance;
+      this.initialZoom = this.cameras.main.zoom;
+    }
+  }
+
+  onPointerUp(pointer) {
+    this.pointers = this.pointers.filter(p => p.id !== pointer.id);
   }
 
   onPointerMove(pointer) {
-    if (this.gameOver) return;
+    if (this.pointers.length === 2) {
+      const p1 = this.pointers[0];
+      const p2 = this.pointers[1];
 
-    if (
-      this.pinch.active &&
-      this.input.pointer1.isDown &&
-      this.input.pointer2.isDown
-    ) {
-      // Handle pinch zoom
-      const currentDistance = Phaser.Math.Distance.Between(
-        this.input.pointer1.x,
-        this.input.pointer1.y,
-        this.input.pointer2.x
-      );
+      // Get the distance between the two pointers
+      const currentDistance = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+      console.log(`Current Distance: ${currentDistance}`);  // Debugging line
 
-      const zoomFactor = currentDistance / this.pinch.initialDistance;
-      const newZoom = this.pinch.initialZoom * zoomFactor;
-      this.setZoom(newZoom);
-    } else if (this.drag.active) {
-      // Handle drag
-      const dragX = this.drag.startX - pointer.x / this.cameras.main.zoom;
-      const dragY = this.drag.startY - pointer.y / this.cameras.main.zoom;
-      this.cameras.main.scrollX = dragX;
-      this.cameras.main.scrollY = dragY;
+      // Calculate the scale factor based on the initial pinch distance
+      const scaleFactor = currentDistance / this.initialPinchDistance;
+      let newZoom = this.initialZoom * scaleFactor;
+
+      // Clamp the new zoom to a reasonable range
+      newZoom = Phaser.Math.Clamp(newZoom, 0.5, 2);
+
+      // Apply the new zoom to the camera
+      this.cameras.main.zoom = newZoom;
+      console.log(`New Zoom: ${newZoom}`);  // Debugging line
     }
-  }
-
-  onPointerUp() {
-    this.pinch.active = false;
-    this.drag.active = false;
-  }
-
-  onWheel(event) {
-    if (this.gameOver) return;
-
-    // Handle mouse wheel zoom
-    const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = this.cameras.main.zoom * zoomFactor;
-    this.setZoom(newZoom);
-  }
-
-  setZoom(newZoom) {
-    // Apply zoom with min and max limits
-    const clampedZoom = Phaser.Math.Clamp(newZoom, 0.5, 3);
-
-    // Get current center point
-    const centerX = this.cameras.main.midPoint.x;
-    const centerY = this.cameras.main.midPoint.y;
-
-    // Set new zoom
-    this.cameras.main.setZoom(clampedZoom);
-
-    // Adjust scroll to maintain center point
-    this.cameras.main.centerOn(centerX, centerY);
   }
 }
